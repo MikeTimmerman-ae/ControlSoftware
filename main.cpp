@@ -2,6 +2,7 @@
 #include <fstream>
 #include <Eigen/Dense>
 #include <Eigen/SparseCore>
+#include <qpOASES.hpp>
 #include <vector>
 #include<math.h>
 #include<string>
@@ -68,17 +69,6 @@ vector<int> NotNanIndex(MatrixXd &A, int n) {
     return indices;
 }
 
-template <typename Derived>
-void bdiag(const MatrixBase<Derived> &A, const MatrixBase<Derived> &B, int N) {
-    int m = B.rows();
-    int n = B.cols();
-    cout << B;
-    for (int i = 0; i < N; ++i) {
-        const_cast< MatrixBase<Derived>& >(A)(seq(m*i, (i+1)*m -1), seq(n*i, (i+1)*n -1)) = B;
-    }
-}
-
-
 class Controller
 {
     public:
@@ -90,6 +80,7 @@ class Controller
         MatrixXd M1, M2;
         SparseMatrix<double> C;
         double Q, d;
+        qpOASES::QProblem Qp;
 
         Controller(Matrix<double, n_states, n_states> &A, Matrix<double, n_states, 1> &B, SparseMatrix<double> &Cpar, double d_par, double Q_par, double R, double QN,
                    int N, MatrixXd &UlbP, MatrixXd &UubP, MatrixXd &XlbP, MatrixXd &XubP, VectorXd &ulinP, VectorXd &qlin, string solver = "qpoases") {
@@ -209,7 +200,6 @@ class Controller
             H = (H+H.transpose())/2;
             
             // Initialize controller with qpOASES
-            
 
 
 
