@@ -1,3 +1,6 @@
 [submodule "libraries/eigen"]
 	path = libraries/eigen
 	url = https://gitlab.com/libeigen/eigen.git
+[submodule "libraries/qpOASES"]
+	path = libraries/qpOASES
+	url = https://github.com/coin-or/qpOASES.git
