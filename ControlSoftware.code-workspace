@@ -4,5 +4,18 @@
 			"path": "."
 		}
 	],
-	"settings": {}
+	"settings": {
+		"files.associations": {
+			"*.tcc": "cpp",
+			"compare": "cpp",
+			"concepts": "cpp",
+			"functional": "cpp",
+			"random": "cpp",
+			"iostream": "cpp",
+			"ostream": "cpp",
+			"*.expression": "cpp",
+			"alignedvector3": "cpp",
+			"fft": "cpp"
+		}
+	}
 }

@@ -1,5 +1,7 @@
 #include <iostream>
 #include <fstream>
+#include <Eigen/Dense>
+#include <Eigen/SparseCore>
 #include <vector>
 #include<math.h>
 #include<string>
@@ -13,20 +15,18 @@ using namespace Eigen;
 using namespace std;
 
 void loadAlift(Matrix<double, n_states, n_states> &AliftRef, string FileName) {
-    ifstream AliftFile;
+    ifstream AliftFile(FileName);
+    if(!AliftFile.is_open()) cout << "ERROR: Alift File Open" << endl;
 
-    AliftFile.open(FileName);
     int i = 0;
     int j = 0;
     for (int k = 0; k < n_states; k++) {
         string line;
         getline(AliftFile, line, '\n');
-        //cout << line << endl;
         if (i == 0) {
             line = line.substr(3, line.length()-1);
         }
         string entry;
-
         for (char c : line) {
             if (c == ';') {
                 AliftRef(i, j) = stod(entry);
@@ -43,9 +43,10 @@ void loadAlift(Matrix<double, n_states, n_states> &AliftRef, string FileName) {
     }
 }
 
-void loadBlift(Matrix<double, n_states, 1> &BliftRef, string FileName) {
-    ifstream BliftFile;
-    BliftFile.open(FileName);
+void loadBlift(Matrix<double, n_states, 1> &BliftRef, const string FileName) {
+    ifstream BliftFile(FileName);
+    if(!BliftFile.is_open()) cout << "ERROR: Blift File Open" << endl;
+    
     int i = 0;
     for (int k = 0; k < n_states; k++) {
         string line;
@@ -71,6 +72,7 @@ template <typename Derived>
 void bdiag(const MatrixBase<Derived> &A, const MatrixBase<Derived> &B, int N) {
     int m = B.rows();
     int n = B.cols();
+    cout << B;
     for (int i = 0; i < N; ++i) {
         const_cast< MatrixBase<Derived>& >(A)(seq(m*i, (i+1)*m -1), seq(n*i, (i+1)*n -1)) = B;
     }
@@ -81,22 +83,29 @@ class Controller
 {
     public:
         int Np, p;
-        double *Ab;
-        //double *Xlb, *Xub;
-        //double *Ulb, *Uub;
-        //double *ulin;
-        double *M1, *M2;
-        double *C;
-        double Q, Qp, d;
+        MatrixXd Ab;
+        MatrixXd Xlb, Xub;
+        MatrixXd Ulb, Uub;
+        VectorXd ulin;
+        MatrixXd M1, M2;
+        SparseMatrix<double> C;
+        double Q, d;
 
-        Controller(Matrix<double, n_states, n_states> &A, Matrix<double, n_states, 1> &B, MatrixXd &C, double d, double Q, double R, double QN,
-                   int Np, MatrixXd &Ulb, MatrixXd &Uub, MatrixXd &Xlb, MatrixXd &Xub, VectorXd &ulin, VectorXd &qlin, string solver = "qpoases") {
+        Controller(Matrix<double, n_states, n_states> &A, Matrix<double, n_states, 1> &B, SparseMatrix<double> &Cpar, double d_par, double Q_par, double R, double QN,
+                   int N, MatrixXd &UlbP, MatrixXd &UubP, MatrixXd &XlbP, MatrixXd &XubP, VectorXd &ulinP, VectorXd &qlin, string solver = "qpoases") {
 
+            Xlb = XlbP; Xub = XubP;             // Save state bounds as controller parameters
+            Ulb = UlbP; Uub = UubP;             // Save control bounds as controller paramters
+            C = Cpar;                           // Save output matrix as controller parameter
+            d = d_par; Q = Q_par;               // Save wieght Q and affine term in the dynamics d as parameters
+            ulin = ulinP;                       // Save linear term in the cost as controller parameter
+
+            Np = N;                             // Number of Control Horizon points
+            p = C.rows();                       // Number of outputs
             const int n = A.rows();             // Number of states
             const int m = B.cols();             // Number of control inputs
-            const int p = C.rows();             // Number of outputs
 
-            VectorXd x0(n);               // Dummy Variable
+            VectorXd x0(n);                     // Dummy Variable
 
             // Handle state boundary matrices; convert matrices from n x 1 --> n x Np
             if (Xub.cols() == 1 || Xlb.cols() == 1) {
@@ -146,28 +155,40 @@ class Controller
             }
 
             // Create MPC matrices
-            MatrixXd Ab_temp = MatrixXd::Identity((Np+1)*n, n);
-            MatrixXd Bb_temp((Np+1)*n, Np*m);
-            for (int i = 1; i <= Np; ++i) {
-                Ab_temp(seq(i*n, (i+1)*n-1), all) = Ab_temp(seq((i-1)*n, i*n-1), all) * A;
-                Bb_temp(seq(i*n, (i+1)*n-1), all) = A * Bb_temp(seq((i-1)*n, i*n-1), all);
-                Bb_temp(seq(i*n, (i+1)*n-1), seq((i-1)*m, i*m-1)) = B;
-            }
-            MatrixXd Ab = Ab_temp(seq(n, last), all);       // Copying these into a new matrix is suboptimal
-            MatrixXd Bb = Bb_temp(seq(n, last), all);       // Pls fix this lol
-            // cout << Bb(seq(2*n, 3*n-1), seq(0,10));
-
+            Ab = MatrixXd(Np*n, n); Ab(seq(0, n-1), seq(0, n-1)) = A;
+            MatrixXd Bb(Np*n, Np*m); Bb(seq(0, n-1), seq(0, m-1)) = B;
+            for (int i = 1; i < Np; ++i) {
+                Ab(seq(i*n, (i+1)*n-1), seq(0,n-1)) = Ab(seq((i-1)*n, i*n-1), seq(0,n-1)) * A;
+                Bb(seq(i*n, (i+1)*n-1), seq(0,Np*m-1)) = A * Bb(seq((i-1)*n, i*n-1), seq(0,Np*m-1));
+                Bb(seq(i*n, (i+1)*n-1), seq(i*m, (i+1)*m-1)) = B;
+            }      
+           
             // Build the controller
             SparseMatrix<double> Qb(p*Np,p*Np);
             for (int i = 0; i < Np*p; ++i) {Qb.insert(i, i) = Q;}
             Qb.insert(p*Np-1, p*Np-1) = QN;
 
-            MatrixXd Cb(Np*C.rows(), Np*C.cols()); bdiag(Cb, C, Np);
+            vector<vector<double>> Cinserts;
+            for (int k=0; k < C.outerSize(); ++k) {
+                vector<double> Cinsert;
+                for (SparseMatrix<double>::InnerIterator it(C,k); it; ++it) {
+                    Cinsert.push_back(it.value()); Cinsert.push_back(it.row()); Cinsert.push_back(it.col()); 
+                    Cinserts.push_back(Cinsert);
+                    Cinsert.clear();
+                }
+            }
+            SparseMatrix<double> Cb(Np*C.rows(), Np*C.cols());
+            for (int i = 0; i < Np; ++i){
+                for (int j = 0; j < Cinserts.size(); ++j) {
+                    Cb.insert(p*i+Cinserts[j][1], n*i+Cinserts[j][2]) = Cinserts[j][0];
+                }
+            }
 
-            MatrixXd Rb = MatrixXd::Identity(Np, Np)*R;
+            SparseMatrix<double> Rb(Np,Np);
+            for (int i = 0; i < Np; ++i) {Rb.insert(i, i) = R;}
 
-            //MatrixXd M1 = 2* ( ( Bb.transpose()* (Cb.transpose()*Qb*Cb) ) *Ab );
-            //MatrixXd M2 = (-2* (Qb*Cb) *Bb).transpose();
+            M1 = 2* ( ( Bb.transpose()* (Cb.transpose()*Qb*Cb) ) *Ab );
+            M2 = (-2* (Qb*Cb) *Bb).transpose();
 
             // Bounds on the states
             MatrixXd Aineq_temp(n*Np*2, Np);
@@ -176,19 +197,19 @@ class Controller
             Xub = Xub.reshaped(); Xlb = Xlb.reshaped();
             Uub = Uub.reshaped(); Ulb = Ulb.reshaped();
 
-            Aineq_temp(seq(0, Np*n-1), all) = Bb; Aineq_temp(seq(Np*n, 2*Np*n-1), all) = -Bb;
-            bineq_temp(seq(0, Np*n-1), all) = Xub - Ab*x0; bineq_temp(seq(Np*n, 2*Np*n-1), all) = -Xlb + Ab*x0;
+            Aineq_temp(seq(0, Np*n-1), seq(0, Aineq_temp.cols()-1)) = Bb; Aineq_temp(seq(Np*n, 2*Np*n-1), seq(0, Aineq_temp.cols()-1)) = -Bb;
+            bineq_temp(seq(0, Np*n-1), seq(0, bineq_temp.cols()-1)) = Xub - Ab*x0; bineq_temp(seq(Np*n, 2*Np*n-1), seq(0, bineq_temp.cols()-1)) = -Xlb + Ab*x0;
 
             vector<int> indices = NotNanIndex(bineq_temp, bineq_temp.rows());
-            MatrixXd Aineq = Aineq_temp(indices, all);
-            MatrixXd bineq = bineq_temp(indices, all);
+            MatrixXd Aineq = Aineq_temp(indices, seq(0, Aineq_temp.cols()-1));
+            MatrixXd bineq = bineq_temp(indices, seq(0, bineq_temp.cols()-1));
 
             MatrixXd H = 2*(Bb.transpose()*Cb.transpose()*Qb*Cb*Bb + Rb);
             MatrixXd f = (2*x0.transpose()*Ab.transpose()*Cb.transpose()*Qb*Cb*Bb).transpose() + ulin + Bb.transpose()*(Cb.transpose()*qlin);
             H = (H+H.transpose())/2;
-
+            
             // Initialize controller with qpOASES
-
+            
 
 
 
@@ -196,18 +217,20 @@ class Controller
         }
 
 
-        double getOptInput()
+        double getOptVal(VectorXd x0, double yr)
         {
             return 0;
         }
 
 };
 
+
+
 int main()
 {
     /* Importing System Dynamics Data */;
-    string FileAlift = "Alift.csv";
-    string FileBlift = "Blift.csv";
+    const string FileAlift = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/Alift.csv";   // change to relative path
+    const string FileBlift = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/Blift.csv";
 
     Matrix<double, n_states, n_states> Alift;
     Matrix<double, n_states, 1> Blift;
@@ -248,7 +271,7 @@ int main()
     }
 
     /* Define Koopman controller */
-    MatrixXd C(1, n_states); C(0, 0) = 1;
+    SparseMatrix<double> C(1, n_states); C.insert(0, 0) = 1;
     // Weight Matrices
     float Q = 1.0;
     float R = 0.01;
@@ -264,24 +287,11 @@ int main()
     VectorXd ulin(1); ulin(0) = 0;
     VectorXd qlin(1); qlin(0) = 0;
 
-
     /* Build Koopman MPC Controller */
 
     Controller MPC(Alift, Blift, C, 0, Q, R, Q, Np, u_min, u_max, xlift_min, xlift_max, ulin, qlin);
 
-    /*
-    for(int i=0;i<n_states;++i){
-		for(int j=0;j<n_states;++j){
-			cout<<C[i][j]<<' ';
-		}
-		cout<<endl;
-	}
-    */
-    /*
-    for(int i=0;i<n_states;++i){
-        cout<< xlift_min[i] <<endl;
-	}
-    */
+
 
     return 0;
 }
