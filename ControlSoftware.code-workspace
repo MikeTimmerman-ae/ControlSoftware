@@ -16,7 +16,8 @@
 			"*.expression": "cpp",
 			"alignedvector3": "cpp",
 			"fft": "cpp",
-			"vector": "cpp"
+			"vector": "cpp",
+			"*.ipp": "cpp"
 		}
 	}
 }

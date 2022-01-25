@@ -69,6 +69,16 @@ vector<int> NotNanIndex(MatrixXd &A, int n) {
     return indices;
 }
 
+void convertMatrixtoQpArray(qpOASES::real_t *qpArray, MatrixXd &Matrix, int m, int n) {
+    int k = 0;
+    for (int i = 0; i < m; ++i) {
+        for (int j=0; j < n; ++j) {
+            *(qpArray + k) = Matrix(i, j);
+            ++k;
+        }
+    }
+}
+
 class Controller
 {
     public:
@@ -80,7 +90,7 @@ class Controller
         MatrixXd M1, M2;
         SparseMatrix<double> C;
         double Q, d;
-        qpOASES::QProblem Qp;
+        qpOASES::SQProblem Qp;
 
         Controller(Matrix<double, n_states, n_states> &A, Matrix<double, n_states, 1> &B, SparseMatrix<double> &Cpar, double d_par, double Q_par, double R, double QN,
                    int N, MatrixXd &UlbP, MatrixXd &UubP, MatrixXd &XlbP, MatrixXd &XubP, VectorXd &ulinP, VectorXd &qlin, string solver = "qpoases") {
@@ -196,13 +206,28 @@ class Controller
             MatrixXd bineq = bineq_temp(indices, seq(0, bineq_temp.cols()-1));
 
             MatrixXd H = 2*(Bb.transpose()*Cb.transpose()*Qb*Cb*Bb + Rb);
-            MatrixXd f = (2*x0.transpose()*Ab.transpose()*Cb.transpose()*Qb*Cb*Bb).transpose() + ulin + Bb.transpose()*(Cb.transpose()*qlin);
+            MatrixXd g = (2*x0.transpose()*Ab.transpose()*Cb.transpose()*Qb*Cb*Bb).transpose() + ulin + Bb.transpose()*(Cb.transpose()*qlin);
             H = (H+H.transpose())/2;
             
             // Initialize controller with qpOASES
+            int nV = Np;
+            int nC = 2*Np;
+            Qp = qpOASES::SQProblem(nV, nC);
+            qpOASES::int_t nWSR = 100000;
+            
+            qpOASES::Options options;
+	        Qp.setOptions( options );
 
-
-
+            qpOASES::real_t H_qp[nV*nV]; convertMatrixtoQpArray(H_qp, H, nV, nV);
+            qpOASES::real_t g_qp[nV]; convertMatrixtoQpArray(g_qp, g, nV, 1);
+            qpOASES::real_t Aineq_qp[nC*nV]; convertMatrixtoQpArray(Aineq_qp, Aineq, nC, nV);
+            qpOASES::real_t Ulb_qp[nV]; convertMatrixtoQpArray(Ulb_qp, Ulb, nV, 1);
+            qpOASES::real_t Uub_qp[nV]; convertMatrixtoQpArray(Uub_qp, Uub, nV, 1);
+            qpOASES::real_t bineq_qp[nC]; convertMatrixtoQpArray(bineq_qp, bineq, nC, 1);
+            
+        	// Solve first QP.
+            Qp.init(H_qp, g_qp, Aineq_qp, Ulb_qp, Uub_qp, NULL, bineq_qp, nWSR);
+            
 
         }
 
