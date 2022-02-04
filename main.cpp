@@ -4,8 +4,8 @@
 #include <Eigen/SparseCore>
 #include <qpOASES.hpp>
 #include <vector>
-#include<math.h>
-#include<string>
+#include <math.h>
+#include <string>
 
 #define PI 3.14159265
 
@@ -60,6 +60,34 @@ void loadBlift(Matrix<double, n_states, 1> &BliftRef, const string FileName) {
     }
 }
 
+MatrixXd loadCent(string FileName) {
+    ifstream CentFile(FileName);
+    if(!CentFile.is_open()) cout << "ERROR: Alift File Open" << endl;
+
+    MatrixXd Cent(3, 100);
+    int i = 0;
+    int j = 0;
+    for (int k = 0; k < 3; k++) {
+        string line;
+        getline(CentFile, line, '\n');
+        string entry;
+        for (char c : line) {
+            if (c == ';') {
+                Cent(i, j) = stod(entry);
+                j++;
+                entry = "";
+            } else {
+                entry += c;
+            }
+        }
+        Cent(i, j) = stod(entry);
+
+        j = 0;
+        i++;
+    }
+    return Cent;
+}
+
 vector<int> NotNanIndex(MatrixXd &A, int n) {
     vector<int> indices;
     for (int i = 0; i < n; ++i) {
@@ -79,6 +107,59 @@ void convertMatrixtoQpArray(qpOASES::real_t *qpArray, MatrixXd &Matrix, int m, i
     }
 }
 
+
+class rbf {
+    public:
+        MatrixXd C;
+        string rbf_type;
+        int eps, k, Nrbf;
+
+        rbf(MatrixXd &cent, string rbf_typeP, int epsP = 1, int kP = 1) {
+            // Initialize the lifting function
+            C = cent;
+            Nrbf = cent.cols();
+            rbf_type = rbf_typeP;
+            eps = epsP; k = kP;
+        }
+
+        VectorXd liftState(VectorXd &x) {
+            // Create lifted matrix
+            int Nstate = x.rows();
+            VectorXd Y(Nrbf + Nstate, 1);
+            
+            // Populate lifted data matrix
+            for (int i = Nstate; i < Nrbf + Nstate; ++i) {
+                MatrixXd Cstate = C(seq(0, Nstate-1), i-3);
+                double r_squared = (x-Cstate).dot(x-Cstate);
+                double y;
+            
+                if (rbf_type == "thinplate") {
+                    y = r_squared*log(sqrt(r_squared));
+                } else if (rbf_type == "gauss") {
+                    y = exp(- pow(eps, 2) * r_squared);
+                } else if (rbf_type == "invquad") {
+                    y = 1 / (1 + pow(eps, 2) * r_squared);
+                } else if (rbf_type == "invmultquad") {
+                    y = 1 / sqrt(1 + pow(eps,2) * r_squared);
+                } else if (rbf_type == "polyharmonic") {
+                    y = pow(r_squared, k/2) * log(sqrt(r_squared));
+                } else {
+                    cout << "RBF type not recognized";
+                } 
+              
+                if (y == NAN) {
+                    y = 0;
+                }
+
+                Y(i) = y;
+            }
+            Y(seq(0, Nstate-1)) = x;
+            
+            return Y;
+        }
+};
+
+
 class Controller
 {
     public:
@@ -90,7 +171,7 @@ class Controller
         MatrixXd M1, M2;
         SparseMatrix<double> C;
         double Q, d;
-        qpOASES::SQProblem Qp;
+        qpOASES::QProblem Qp; 
 
         Controller(Matrix<double, n_states, n_states> &A, Matrix<double, n_states, 1> &B, SparseMatrix<double> &Cpar, double d_par, double Q_par, double R, double QN,
                    int N, MatrixXd &UlbP, MatrixXd &UubP, MatrixXd &XlbP, MatrixXd &XubP, VectorXd &ulinP, VectorXd &qlin, string solver = "qpoases") {
@@ -122,7 +203,7 @@ class Controller
                     cout << "The dimension of Uub or Ulb seems to be wrong" << endl;
                 }
                 VectorXd Ulb_temp = Ulb; Ulb = Ulb_temp.replicate(1, Np);
-                VectorXd Uub_temp = Uub; Uub = Uub.replicate(1, Np);
+                VectorXd Uub_temp = Uub; Uub = Uub_temp.replicate(1, Np);
             }
 
             // Affine term in the dynamics - handled by state inflation (d=0)
@@ -212,10 +293,12 @@ class Controller
             // Initialize controller with qpOASES
             int nV = Np;
             int nC = 2*Np;
-            Qp = qpOASES::SQProblem(nV, nC);
-            qpOASES::int_t nWSR = 100000;
+            Qp = qpOASES::QProblem(nV, nC);
+            qpOASES::int_t nWSR = 10;
             
             qpOASES::Options options;
+            options.setToMPC();
+            options.printLevel = qpOASES::PL_LOW;
 	        Qp.setOptions( options );
 
             qpOASES::real_t H_qp[nV*nV]; convertMatrixtoQpArray(H_qp, H, nV, nV);
@@ -224,34 +307,88 @@ class Controller
             qpOASES::real_t Ulb_qp[nV]; convertMatrixtoQpArray(Ulb_qp, Ulb, nV, 1);
             qpOASES::real_t Uub_qp[nV]; convertMatrixtoQpArray(Uub_qp, Uub, nV, 1);
             qpOASES::real_t bineq_qp[nC]; convertMatrixtoQpArray(bineq_qp, bineq, nC, 1);
-            
-        	// Solve first QP.
-            Qp.init(H_qp, g_qp, Aineq_qp, Ulb_qp, Uub_qp, NULL, bineq_qp, nWSR);
-            
 
+            qpOASES::SymDenseMat *Hsd = new qpOASES::SymDenseMat(100, 100, 100, H_qp);
+	        qpOASES::DenseMatrix *Ad = new qpOASES::DenseMatrix(200, 100, 100, Aineq_qp);
+
+            // Solve first QP.
+            Qp.init(Hsd, g_qp, Ad, Ulb_qp, Uub_qp, NULL, bineq_qp, nWSR);
         }
 
 
-        double getOptVal(VectorXd x0, double yr)
+        double getOptVal(VectorXd x0, double yrr)
         {
-            return 0;
+            // Reference state and current state
+            VectorXd yr = VectorXd::Constant(Np, yrr);
+
+            if (!isnan(d)) {
+                x0 = x0;
+            }
+
+            // Linear part of constraints
+            MatrixXd bineq_temp(n_states*Np*2, 1);
+            bineq_temp(seq(0, Np*n_states-1), seq(0, bineq_temp.cols()-1)) = Xub - Ab*x0; bineq_temp(seq(Np*n_states, 2*Np*n_states-1), seq(0, bineq_temp.cols()-1)) = -Xlb + Ab*x0;
+            vector<int> indices = NotNanIndex(bineq_temp, bineq_temp.rows());
+            MatrixXd bineq = bineq_temp(indices, seq(0, bineq_temp.cols()-1));
+
+            // Linear part of the objective function
+            MatrixXd g = M1*x0 + M2*yr + ulin;
+
+
+            // Solve Qp
+            int nV = Np;
+            int nC = 2*Np;
+            qpOASES::int_t nWSR = 10;
+            qpOASES::real_t U[nV];
+
+            qpOASES::real_t g_qp[nV]; convertMatrixtoQpArray(g_qp, g, nV, 1);
+            qpOASES::real_t Ulb_qp[nV]; convertMatrixtoQpArray(Ulb_qp, Ulb, nV, 1);
+            qpOASES::real_t Uub_qp[nV]; convertMatrixtoQpArray(Uub_qp, Uub, nV, 1);
+            qpOASES::real_t bineq_qp[nC]; convertMatrixtoQpArray(bineq_qp, bineq, nC, 1);
+
+            Qp.hotstart(g_qp, Ulb_qp, Uub_qp, NULL, bineq_qp, nWSR);
+            
+            Qp.getPrimalSolution(U);                                                            // get optimal control inputs over event horizon
+            MatrixXd y = C*x0;
+            double optval = Qp.getObjVal() + (y.transpose()*Q*y)(0);
+
+            return U[0];
         }
-
 };
-
 
 
 int main()
 {
+    /* Dynamics Properties */
+    int n = 2;                              // number of states
+    int m = 1;                              // number of control inputs
+    Matrix<double, 1, 2> Cy {0, 1};         // output matrix: y = Cy*x
+    int nD = 1;                             // number of delays
+    int ny = Cy.rows();                     // number of outputs
+    int n_zeta = (nD+1)*ny + nD*m;          // dimension of delay-embedded state
+
+
+
     /* Importing System Dynamics Data */;
     const string FileAlift = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/Alift.csv";   // change to relative path
     const string FileBlift = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/Blift.csv";
+    const string FileCent = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/cent.csv";
 
     Matrix<double, n_states, n_states> Alift;
     Matrix<double, n_states, 1> Blift;
 
     loadAlift(Alift, FileAlift);
     loadBlift(Blift, FileBlift);
+
+
+
+    /* Configure lifting function */
+    int Nrbf = 100;
+    //MatrixXd cent = MatrixXd::Random(n_zeta, Nrbf);
+    MatrixXd cent = loadCent(FileCent);
+    string rbf_type = "thinplate";
+    rbf liftFun(cent, rbf_type);
+
 
     /* Build reference signal */
     const float Tmax = 3;
@@ -285,6 +422,8 @@ int main()
             break;
     }
 
+
+
     /* Define Koopman controller */
     SparseMatrix<double> C(1, n_states); C.insert(0, 0) = 1;
     // Weight Matrices
@@ -302,11 +441,42 @@ int main()
     VectorXd ulin(1); ulin(0) = 0;
     VectorXd qlin(1); qlin(0) = 0;
 
+
+
     /* Build Koopman MPC Controller */
 
     Controller MPC(Alift, Blift, C, 0, Q, R, Q, Np, u_min, u_max, xlift_min, xlift_max, ulin, qlin);
 
 
+
+    /* Closed loop simulation */
+    Vector2d x {0.1560, 0.5571};
+    VectorXd zeta(3, 1); zeta << 0.5571, 0, 0.6;
+
+    MatrixXd X(Nsim+1, n); X(0, seq(0, n-1)) = x;
+    MatrixXd U(Nsim, 1);
+
+    // Loop which would be running in real time on the rocket
+    for (int i = 0; i < 3; ++i) {
+        // Current value of the reference signal
+        double yr = yrr(0, i);
+
+        // Simulate closed loop feedback control
+        VectorXd xlift = liftFun.liftState(zeta);
+        qpOASES::real_t tic = qpOASES::getCPUtime();
+        double u = MPC.getOptVal(xlift, yr);
+        qpOASES::real_t toc = qpOASES::getCPUtime();
+        //x = dynamics.nextState(0, x, u);
+        //zeta(2, 0) = zeta(0,0); zeta(1,0) = u; zeta(0,0) = Cy*x;
+
+        // Store data
+        //X(i+1, seq(0, n-1)) = x;
+        //U(i, 0) = u;
+        
+        if ((i+1)%10 == 0) {
+            cout << "Closed-Loop simulation: iteration " << i+1 << " out of " << Nsim << endl;
+        }
+    }
 
     return 0;
 }

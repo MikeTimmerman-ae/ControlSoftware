@@ -17,7 +17,11 @@
 			"alignedvector3": "cpp",
 			"fft": "cpp",
 			"vector": "cpp",
-			"*.ipp": "cpp"
+			"*.ipp": "cpp",
+			"fstream": "cpp",
+			"dense": "cpp",
+			"cmath": "cpp",
+			"complex": "cpp"
 		}
 	}
 }
