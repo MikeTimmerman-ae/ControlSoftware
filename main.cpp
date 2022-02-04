@@ -31,6 +31,21 @@ MatrixXd loadFile(string FileName, int row, int col) {
 }
 
 
+void saveToFile(MatrixXd &data, int rows, int cols, string FileName) {
+    ofstream File; File.open(FileName);
+
+    for (int k = 0; k < rows; ++k) {
+        string line = "";
+        for (int j = 0; j < cols; ++j) {
+            line.append(to_string(data(k, j)));
+            line.append(",");
+        }
+        line.pop_back();
+        File << line << "\n";
+    }
+    File.close();
+}
+
 vector<int> NotNanIndex(MatrixXd &A, int n) {
     vector<int> indices;
     for (int i = 0; i < n; ++i) {
@@ -393,7 +408,7 @@ int main()
     const int Nsim = Tmax/dt;
     float ymin, ymax;
     Vector2d x0;
-    MatrixXd yrr(1, Nsim);
+    MatrixXd yrr(Nsim, 1);
     int REF = 1; // Select type of reference signal (cos(1)/step(2))
     switch(REF) {
         case 1:
@@ -452,13 +467,13 @@ int main()
     VectorXd zeta(3, 1); zeta << 0.5571, 0.0, 0.6;
     VectorXd xlift;
 
-    MatrixXd X(n, Nsim+1); X(seq(0, n-1), 0) = Motor.state;
+    MatrixXd X(Nsim+1, n); X(0, seq(0, n-1)) = Motor.state.transpose();
     MatrixXd U(Nsim, 1);
 
     // Loop which would be running in real time on the rocket
     for (int i = 0; i < Nsim; ++i) {
         // Current value of the reference signal
-        double yr = yrr(0, i);
+        double yr = yrr(i, 0);
 
         // Simulate closed loop feedback control
         xlift = liftFun.liftState(zeta);
@@ -467,13 +482,22 @@ int main()
         zeta(2, 0) = zeta(0,0); zeta(1,0) = u; zeta(0,0) = Cy*Motor.state;
 
         // Store data
-        X(seq(0, n-1), i+1) = Motor.state;
+        X(i+1, seq(0, n-1)) = Motor.state.transpose();
         U(i, 0) = u;
         
         if ((i+1)%10 == 0) {
             cout << "Closed-Loop simulation: iteration " << i+1 << " out of " << Nsim << endl;
         }
     }
+
+    // Store data in csv files
+    const string referenceFile = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/reference.csv";
+    const string stateFile = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/state.csv";
+    const string controlFile = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/control.csv";
+
+    saveToFile(yrr, yrr.rows(), yrr.cols(), referenceFile);
+    saveToFile(X, X.rows(), X.cols(), stateFile);
+    saveToFile(U, U.rows(), U.cols(), controlFile);
 
     return 0;
 }
