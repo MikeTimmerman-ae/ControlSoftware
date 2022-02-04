@@ -15,78 +15,21 @@ const float dt = 0.01;
 using namespace Eigen;
 using namespace std;
 
-void loadAlift(Matrix<double, n_states, n_states> &AliftRef, string FileName) {
-    ifstream AliftFile(FileName);
-    if(!AliftFile.is_open()) cout << "ERROR: Alift File Open" << endl;
-
-    int i = 0;
-    int j = 0;
-    for (int k = 0; k < n_states; k++) {
-        string line;
-        getline(AliftFile, line, '\n');
-        if (i == 0) {
-            line = line.substr(3, line.length()-1);
-        }
-        string entry;
-        for (char c : line) {
-            if (c == ';') {
-                AliftRef(i, j) = stod(entry);
-                j++;
-                entry = "";
-            } else {
-                entry += c;
-            }
-        }
-        AliftRef(i, j) = stod(entry);
-
-        j = 0;
-        i++;
-    }
+MatrixXd loadFile(string FileName, int row, int col) {
+    MatrixXd Matrix(row, col);
+	ifstream File(FileName);
+	for (int k = 0; k < row; ++k) {
+		string line;
+		getline(File, line, '\n');
+		for (int j = 0; j < col; ++j) {
+			string entry = line.substr(0, line.find(','));
+			line.erase(0, line.find(',') + 1);
+			Matrix(k, j) = stod(entry);
+		}
+	}
+    return Matrix;
 }
 
-void loadBlift(Matrix<double, n_states, 1> &BliftRef, const string FileName) {
-    ifstream BliftFile(FileName);
-    if(!BliftFile.is_open()) cout << "ERROR: Blift File Open" << endl;
-    
-    int i = 0;
-    for (int k = 0; k < n_states; k++) {
-        string line;
-        getline(BliftFile, line, '\n');
-        if (i == 0) {
-            line = line.substr(3, line.length());
-        }
-        BliftRef(i) = stod(line);
-        i++;
-    }
-}
-
-MatrixXd loadCent(string FileName) {
-    ifstream CentFile(FileName);
-    if(!CentFile.is_open()) cout << "ERROR: Alift File Open" << endl;
-
-    MatrixXd Cent(3, 100);
-    int i = 0;
-    int j = 0;
-    for (int k = 0; k < 3; k++) {
-        string line;
-        getline(CentFile, line, '\n');
-        string entry;
-        for (char c : line) {
-            if (c == ';') {
-                Cent(i, j) = stod(entry);
-                j++;
-                entry = "";
-            } else {
-                entry += c;
-            }
-        }
-        Cent(i, j) = stod(entry);
-
-        j = 0;
-        i++;
-    }
-    return Cent;
-}
 
 vector<int> NotNanIndex(MatrixXd &A, int n) {
     vector<int> indices;
@@ -106,7 +49,6 @@ void convertMatrixtoQpArray(qpOASES::real_t *qpArray, MatrixXd &Matrix, int m, i
         }
     }
 }
-
 
 class rbf {
     public:
@@ -159,9 +101,73 @@ class rbf {
         }
 };
 
+class dynamics {
+    private:
+        VectorXd k1;
+        VectorXd k2;
+        VectorXd k3;
+        VectorXd k4;
+        VectorXd stateDerivative;
+        VectorXd stateEv;
+        void DyDt(double u) {
+            /*
+            t - 1-D array representing the independent variable of the DE
+            y - N-D array representing the state variable of the DE
+            */
+            stateDerivative[0] = 19.10828025-39.3153*stateEv[0]-32.2293*stateEv[1]*u;
+            stateDerivative[1] = -3.333333333-1.6599*stateEv[1]+22.9478*stateEv[0]*u;
+        }
+    public:
+        double dt;
+        double t;
+        int n_states;
+        VectorXd state;
+        dynamics(int n, VectorXd initState = VectorXd::Zero(2,1), double dtP = 0.01, double tP = 0) {
+            // Initialize system properties
+            dt = dtP;
+            t = tP;
+            n_states = n;
+            state = initState;
+
+            // Initialize private data members
+            k1 = VectorXd::Zero(n,1);
+            k2 = VectorXd::Zero(n,1);
+            k3 = VectorXd::Zero(n,1);
+            k4 = VectorXd::Zero(n,1);
+            stateDerivative = VectorXd::Zero(n,1);
+        }
+        
+        void updateState(double u){
+            // Evaluation at start of interval
+            stateEv = state;
+            DyDt(u);
+            k1 = stateDerivative;
+
+            // Evaluation at midway of interval
+            t + 1/2*dt;
+            stateEv = state + dt*k1/2.0;
+            DyDt(u);
+            k2 = stateDerivative;
+
+            stateEv = state + dt*k2/2.0;
+            DyDt(u);
+            k3 = stateDerivative;
+
+            // Evaluation at end of interval
+            t + 1/2*dt;
+            stateEv = state + dt*k3;
+            DyDt(u);
+            k4 = stateDerivative;
+
+            state = state + dt*(k1 + 2.0*k2 + 2.0*k3 + k4)/6.0;
+        }
+};
 
 class Controller
 {
+    private:
+        qpOASES::QProblem Qp; 
+        qpOASES::real_t H_qp[100*100];
     public:
         int Np, p;
         MatrixXd Ab;
@@ -171,9 +177,8 @@ class Controller
         MatrixXd M1, M2;
         SparseMatrix<double> C;
         double Q, d;
-        qpOASES::QProblem Qp; 
 
-        Controller(Matrix<double, n_states, n_states> &A, Matrix<double, n_states, 1> &B, SparseMatrix<double> &Cpar, double d_par, double Q_par, double R, double QN,
+        Controller(MatrixXd &A, MatrixXd &B, SparseMatrix<double> &Cpar, double d_par, double Q_par, double R, double QN,
                    int N, MatrixXd &UlbP, MatrixXd &UubP, MatrixXd &XlbP, MatrixXd &XubP, VectorXd &ulinP, VectorXd &qlin, string solver = "qpoases") {
 
             Xlb = XlbP; Xub = XubP;             // Save state bounds as controller parameters
@@ -294,20 +299,20 @@ class Controller
             int nV = Np;
             int nC = 2*Np;
             Qp = qpOASES::QProblem(nV, nC);
-            qpOASES::int_t nWSR = 10;
+            qpOASES::int_t nWSR = 1000;
             
             qpOASES::Options options;
             options.setToMPC();
             options.printLevel = qpOASES::PL_LOW;
 	        Qp.setOptions( options );
 
-            qpOASES::real_t H_qp[nV*nV]; convertMatrixtoQpArray(H_qp, H, nV, nV);
+            convertMatrixtoQpArray(H_qp, H, nV, nV); 
             qpOASES::real_t g_qp[nV]; convertMatrixtoQpArray(g_qp, g, nV, 1);
             qpOASES::real_t Aineq_qp[nC*nV]; convertMatrixtoQpArray(Aineq_qp, Aineq, nC, nV);
             qpOASES::real_t Ulb_qp[nV]; convertMatrixtoQpArray(Ulb_qp, Ulb, nV, 1);
             qpOASES::real_t Uub_qp[nV]; convertMatrixtoQpArray(Uub_qp, Uub, nV, 1);
             qpOASES::real_t bineq_qp[nC]; convertMatrixtoQpArray(bineq_qp, bineq, nC, 1);
-
+            
             qpOASES::SymDenseMat *Hsd = new qpOASES::SymDenseMat(100, 100, 100, H_qp);
 	        qpOASES::DenseMatrix *Ad = new qpOASES::DenseMatrix(200, 100, 100, Aineq_qp);
 
@@ -334,11 +339,10 @@ class Controller
             // Linear part of the objective function
             MatrixXd g = M1*x0 + M2*yr + ulin;
 
-
             // Solve Qp
             int nV = Np;
             int nC = 2*Np;
-            qpOASES::int_t nWSR = 10;
+            qpOASES::int_t nWSR = 1000;
             qpOASES::real_t U[nV];
 
             qpOASES::real_t g_qp[nV]; convertMatrixtoQpArray(g_qp, g, nV, 1);
@@ -351,7 +355,7 @@ class Controller
             Qp.getPrimalSolution(U);                                                            // get optimal control inputs over event horizon
             MatrixXd y = C*x0;
             double optval = Qp.getObjVal() + (y.transpose()*Q*y)(0);
-
+            
             return U[0];
         }
 };
@@ -367,35 +371,29 @@ int main()
     int ny = Cy.rows();                     // number of outputs
     int n_zeta = (nD+1)*ny + nD*m;          // dimension of delay-embedded state
 
-
+    dynamics Motor(n, VectorXd::Zero(2,1), dt, 0);
 
     /* Importing System Dynamics Data */;
     const string FileAlift = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/Alift.csv";   // change to relative path
     const string FileBlift = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/Blift.csv";
     const string FileCent = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/cent.csv";
 
-    Matrix<double, n_states, n_states> Alift;
-    Matrix<double, n_states, 1> Blift;
-
-    loadAlift(Alift, FileAlift);
-    loadBlift(Blift, FileBlift);
-
-
+    MatrixXd Alift = loadFile(FileAlift, n_states, n_states);
+    MatrixXd Blift = loadFile(FileBlift, n_states, 1);
 
     /* Configure lifting function */
     int Nrbf = 100;
     //MatrixXd cent = MatrixXd::Random(n_zeta, Nrbf);
-    MatrixXd cent = loadCent(FileCent);
+    MatrixXd cent = loadFile(FileCent, n_zeta, Nrbf);
     string rbf_type = "thinplate";
     rbf liftFun(cent, rbf_type);
-
 
     /* Build reference signal */
     const float Tmax = 3;
     const int Nsim = Tmax/dt;
     float ymin, ymax;
     Vector2d x0;
-    Matrix<double, 1, Nsim> yrr;
+    MatrixXd yrr(1, Nsim);
     int REF = 1; // Select type of reference signal (cos(1)/step(2))
     switch(REF) {
         case 1:
@@ -450,28 +448,27 @@ int main()
 
 
     /* Closed loop simulation */
-    Vector2d x {0.1560, 0.5571};
-    VectorXd zeta(3, 1); zeta << 0.5571, 0, 0.6;
+    Motor.state << 0.1580, 0.5571;
+    VectorXd zeta(3, 1); zeta << 0.5571, 0.0, 0.6;
+    VectorXd xlift;
 
-    MatrixXd X(Nsim+1, n); X(0, seq(0, n-1)) = x;
+    MatrixXd X(n, Nsim+1); X(seq(0, n-1), 0) = Motor.state;
     MatrixXd U(Nsim, 1);
 
     // Loop which would be running in real time on the rocket
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < Nsim; ++i) {
         // Current value of the reference signal
         double yr = yrr(0, i);
 
         // Simulate closed loop feedback control
-        VectorXd xlift = liftFun.liftState(zeta);
-        qpOASES::real_t tic = qpOASES::getCPUtime();
+        xlift = liftFun.liftState(zeta);
         double u = MPC.getOptVal(xlift, yr);
-        qpOASES::real_t toc = qpOASES::getCPUtime();
-        //x = dynamics.nextState(0, x, u);
-        //zeta(2, 0) = zeta(0,0); zeta(1,0) = u; zeta(0,0) = Cy*x;
+        Motor.updateState(u);
+        zeta(2, 0) = zeta(0,0); zeta(1,0) = u; zeta(0,0) = Cy*Motor.state;
 
         // Store data
-        //X(i+1, seq(0, n-1)) = x;
-        //U(i, 0) = u;
+        X(seq(0, n-1), i+1) = Motor.state;
+        U(i, 0) = u;
         
         if ((i+1)%10 == 0) {
             cout << "Closed-Loop simulation: iteration " << i+1 << " out of " << Nsim << endl;
