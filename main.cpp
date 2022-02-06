@@ -387,6 +387,7 @@ int main()
     int n_zeta = (nD+1)*ny + nD*m;          // dimension of delay-embedded state
 
     dynamics Motor(n, VectorXd::Zero(2,1), dt, 0);
+    dynamics MotorNom(n, VectorXd::Zero(2,1), dt, 0);
 
     /* Importing System Dynamics Data */;
     const string FileAlift = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/Alift.csv";   // change to relative path
@@ -409,7 +410,7 @@ int main()
     float ymin, ymax;
     Vector2d x0;
     MatrixXd yrr(Nsim, 1);
-    int REF = 1; // Select type of reference signal (cos(1)/step(2))
+    int REF = 2; // Select type of reference signal (cos(2)/step(1))
     switch(REF) {
         case 1:
             ymin = -0.6;                                // constraint
@@ -463,15 +464,19 @@ int main()
 
 
     /* Closed loop simulation */
-    Motor.state << 0.1580, 0.5571;
-    VectorXd zeta(3, 1); zeta << 0.5571, 0.0, 0.6;
+    Motor.state << 0.0905, 0.0653;
+    MotorNom.state << 0.0905, 0.0653;
+    VectorXd zeta(3, 1); zeta << 0.0653, 0.0, 0.1;
     VectorXd xlift;
 
     MatrixXd X(Nsim+1, n); X(0, seq(0, n-1)) = Motor.state.transpose();
+    MatrixXd Xnom(Nsim+1, n); Xnom(0, seq(0, n-1)) = MotorNom.state.transpose();
     MatrixXd U(Nsim, 1);
+    MatrixXd CPUtime(Nsim, 1);
 
     // Loop which would be running in real time on the rocket
     for (int i = 0; i < Nsim; ++i) {
+        qpOASES::real_t tic = qpOASES::getCPUtime();
         // Current value of the reference signal
         double yr = yrr(i, 0);
 
@@ -480,10 +485,14 @@ int main()
         double u = MPC.getOptVal(xlift, yr);
         Motor.updateState(u);
         zeta(2, 0) = zeta(0,0); zeta(1,0) = u; zeta(0,0) = Cy*Motor.state;
+        qpOASES::real_t toc = qpOASES::getCPUtime();
+        MotorNom.updateState(0);
 
         // Store data
         X(i+1, seq(0, n-1)) = Motor.state.transpose();
+        Xnom(i+1, seq(0, n-1)) = MotorNom.state.transpose();
         U(i, 0) = u;
+        CPUtime(i, 0) = toc-tic;
         
         if ((i+1)%10 == 0) {
             cout << "Closed-Loop simulation: iteration " << i+1 << " out of " << Nsim << endl;
@@ -494,10 +503,14 @@ int main()
     const string referenceFile = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/reference.csv";
     const string stateFile = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/state.csv";
     const string controlFile = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/control.csv";
+    const string nomStateFile = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/nomState.csv";
+    const string cpuTimeFile = "C:/Users/timme/OneDrive/Bureaublad/Tu Delft/DARE/Control Algorithm/Control Algorithm Tool/ControlSoftware/datafiles/cpuTime.csv";
 
     saveToFile(yrr, yrr.rows(), yrr.cols(), referenceFile);
     saveToFile(X, X.rows(), X.cols(), stateFile);
     saveToFile(U, U.rows(), U.cols(), controlFile);
+    saveToFile(Xnom, Xnom.rows(), Xnom.cols(), nomStateFile);
+    saveToFile(CPUtime, CPUtime.rows(), CPUtime.cols(), cpuTimeFile);
 
     return 0;
 }
