@@ -30,7 +30,6 @@ MatrixXd loadFile(string FileName, int row, int col) {
     return Matrix;
 }
 
-
 void saveToFile(MatrixXd &data, int rows, int cols, string FileName) {
     ofstream File; File.open(FileName);
 
@@ -211,7 +210,7 @@ class Controller
 
             // Handle state boundary matrices; convert matrices from n x 1 --> n x Np
             if (Xub.cols() == 1 || Xlb.cols() == 1) {
-                if (Xub.size() != n || Xub.size() != n) {
+                if (Xub.size() != n || Xlb.size() != n) {
                     cout << "The dimension of Xub or Xlb seems to be wrong" << endl;
                 }
                 VectorXd Xlb_temp = Xlb; Xlb = Xlb_temp.replicate(1, Np);
